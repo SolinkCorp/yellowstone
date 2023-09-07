@@ -66,7 +66,9 @@ export default class RTSPClient extends EventEmitter {
         [key: string]: string;
     });
     _netConnect(hostname: string, port: number): Promise<this>;
-    connect(url: string, { keepAlive, connection, }?: {
+    connect(url: string, { voidOptions, audioOnly, keepAlive, connection, }?: {
+        avoidOptions: false,
+        audioOnly: false,
         keepAlive: boolean;
         connection?: Connection;
     }): Promise<Detail[]>;
@@ -75,7 +77,7 @@ export default class RTSPClient extends EventEmitter {
         mediaHeaders?: string[];
     } | void>;
     respond(status: string, headersParam?: Headers): void;
-    play(): Promise<void>;
+    play(headersParam?: Headers): Promise<void>;
     pause(): Promise<void>;
     sendAudioBackChannel(audioChunk: Buffer): Promise<void>;
     close(isImmediate?: boolean): Promise<void>;

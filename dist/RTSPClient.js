@@ -7,6 +7,7 @@ const events_1 = require("events");
 const util_1 = require("./util");
 const transform = require("sdp-transform");
 const RTPPacket_1 = require("./transports/RTPPacket");
+const { head } = require("lodash");
 const RTP_AVP = "RTP/AVP";
 const STATUS_OK = 200;
 const STATUS_UNAUTH = 401;
@@ -48,7 +49,7 @@ class RTSPClient extends events_1.EventEmitter {
         this.isConnected = false;
         this.closed = false;
         this._cSeq = 0;
-        this._nextFreeInterleavedChannel = 0;
+        this._nextFreeInterleavedChannel = 2;
         this._nextFreeUDPPort = 5000;
         this.readState = ReadStates.SEARCHING;
         // Used as a cache for the data stream.
@@ -69,6 +70,7 @@ class RTSPClient extends events_1.EventEmitter {
         this.setupResult = [];
         this.username = username;
         this.password = password;
+        this._authHeader = null;
         this.headers = Object.assign(Object.assign({}, (headers || {})), { "User-Agent": "yellowstone/3.x" });
     }
     // This manages the lifecycle for the RTSP connection
@@ -115,17 +117,23 @@ class RTSPClient extends events_1.EventEmitter {
             this.tcpSocket = client;
         });
     }
-    async connect(url, { keepAlive = true, connection = "udp", } = {
+    async connect(url, { avoidOptions = false, audioOnly = false, keepAlive = true, connection = "udp", } = {
+        avoidOptions: false,
+        audioOnly: false,
         keepAlive: true,
         connection: "udp",
     }) {
+
         const { hostname, port } = (0, url_1.parse)((this._url = url));
         if (!hostname) {
             throw new Error("URL parsing error in connect method.");
         }
         const details = [];
         await this._netConnect(hostname, parseInt(port || "554"));
-        await this.request("OPTIONS");
+
+        //  J. UDALL - some cameras do NOT support OPTIONS message
+        if (!avoidOptions)
+            await this.request("OPTIONS");
         const describeRes = await this.request("DESCRIBE", {
             Accept: "application/sdp",
         });
@@ -144,6 +152,13 @@ class RTSPClient extends events_1.EventEmitter {
             let needSetup = false;
             let codec = "";
             const mediaSource = media[x];
+
+            //  J. UDALL: Has he asked to omit everything except audio?
+            if (mediaSource.type != 'audio' && audioOnly){
+                this.emit("log", "Video Stream Found in SDP but requested to ignore", "");
+                continue
+            }
+            
             // RFC says "If none of the direction attributes ("sendonly", "recvonly", "inactive", and "sendrecv") are present,
             // the "sendrecv" SHOULD be assumed
             if (mediaSource.direction == undefined)
@@ -181,9 +196,21 @@ class RTSPClient extends events_1.EventEmitter {
                 }
             }
             if (mediaSource.type === "audio" &&
+                mediaSource.direction === "recvonly" &&
+                mediaSource.protocol === RTP_AVP &&
+                (mediaSource.rtp[0].codec.toLowerCase() === "pcmu" || mediaSource.rtp[0].codec.toLowerCase() === "pcma")){
+                // this.emit("log", `${mediaSource.rtp[0].codec} Inbound Audio Backchannel Found in SDP`, "");
+                // if (hasAudio == false) {
+                //     needSetup = true;
+                //     hasAudio = true;
+                //     codec = mediaSource.rtp[0].codec.toUpperCase();
+                // }
+            }
+
+            if (mediaSource.type === "audio" &&
                 mediaSource.direction === "sendonly" &&
                 mediaSource.protocol === RTP_AVP) {
-                this.emit("log", "Audio backchannel Found in SDP", "");
+                this.emit("log", `Audio Backchannel (${mediaSource.rtp[0].codec}) Found in SDP`, "");
                 if (hasBackchannel == false) {
                     needSetup = true;
                     hasBackchannel = true;
@@ -309,7 +336,8 @@ class RTSPClient extends events_1.EventEmitter {
                 details.push(detail);
             } // end if (needSetup)
         } // end for loop, looping over each media stream
-        if (keepAlive) {
+        //  J. UDALL - avoid OPTIONS command on some cameras
+        if (keepAlive && !avoidOptions) {
             // Start a Timer to send OPTIONS every 20 seconds to keep stream alive
             // using the Session ID
             this._keepAliveID = setInterval(() => {
@@ -323,6 +351,49 @@ class RTSPClient extends events_1.EventEmitter {
     request(requestName, headersParam = {}, url) {
         if (!this._client) {
             return Promise.resolve();
+        }
+
+        //  J. UDALL - If we don't have an authorization header, can we add a cached one?
+        //  NOTE:  This only applies to requests that are NOT DESCRIBE.  DESCRIBE will
+        //  actually do the authentication
+        if (requestName != 'DESCRIBE'){
+            if (!headersParam.Authorization && this._authHeader){
+
+                //  J. UDALL - If we've cached authentication info, then add authentication header
+                if (this._authHeader){
+                    const type = this._authHeader.split(" ")[0];
+                    // Get auth properties from WWW_AUTH header.
+                    let realm = "";
+                    let nonce = "";
+                    let match = WWW_AUTH_REGEX.exec(this._authHeader);
+                    while (match != null) {
+                        const prop = match[1];
+                        if (prop == "realm" && match[2]) {
+                            realm = match[2];
+                        }
+                        if (prop == "nonce" && match[2]) {
+                            nonce = match[2];
+                        }
+                        match = WWW_AUTH_REGEX.exec(this._authHeader);
+                    }
+                    // mutable, corresponds to Authorization header
+                    let authString = "";
+                    if (type === "Digest") {
+                        // Digest Authentication
+                        const ha1 = (0, util_1.getMD5Hash)(`${this.username}:${realm}:${this.password}`);
+                        const ha2 = (0, util_1.getMD5Hash)(`${requestName}:${this._url}`);
+                        const ha3 = (0, util_1.getMD5Hash)(`${ha1}:${nonce}:${ha2}`);
+                        authString = `Digest username="${this.username}",realm="${realm}",nonce="${nonce}",uri="${this._url}",response="${ha3}"`;
+                    }
+                    else if (type === "Basic") {
+                        // Basic Authentication
+                        // https://xkcd.com/538/
+                        const b64 = new Buffer(`${this.username}:${this.password}`).toString("base64");
+                        authString = `Basic ${b64}`;
+                    }
+                    headersParam = {...headersParam, ...{Authorization: authString}}
+                }
+            }
         }
         const id = ++this._cSeq;
         // mutable via string addition
@@ -368,11 +439,12 @@ class RTSPClient extends events_1.EventEmitter {
                     const authHeader = resHeaders[WWW_AUTH];
                     // We have status code unauthenticated.
                     if (statusCode === STATUS_UNAUTH && authHeader) {
-                        const type = authHeader.split(" ")[0];
+                        this._authHeader = authHeader
+                        const type = this._authHeader.split(" ")[0];
                         // Get auth properties from WWW_AUTH header.
                         let realm = "";
                         let nonce = "";
-                        let match = WWW_AUTH_REGEX.exec(authHeader);
+                        let match = WWW_AUTH_REGEX.exec(this._authHeader);
                         while (match != null) {
                             const prop = match[1];
                             if (prop == "realm" && match[2]) {
@@ -381,7 +453,7 @@ class RTSPClient extends events_1.EventEmitter {
                             if (prop == "nonce" && match[2]) {
                                 nonce = match[2];
                             }
-                            match = WWW_AUTH_REGEX.exec(authHeader);
+                            match = WWW_AUTH_REGEX.exec(this._authHeader);
                         }
                         // mutable, corresponds to Authorization header
                         let authString = "";
@@ -409,6 +481,9 @@ class RTSPClient extends events_1.EventEmitter {
                 }
             };
             this.on("response", responseHandler);
+            this.on("error", (err) => {
+                console.log(err.message)
+            });
         });
     }
     respond(status, headersParam = {}) {
@@ -424,11 +499,14 @@ class RTSPClient extends events_1.EventEmitter {
         this.emit("log", res, "C->S");
         this._client.write(`${res}\r\n`);
     }
-    async play() {
+    async play(headersParam = {}) {
         if (!this.isConnected) {
             throw new Error("Client is not connected.");
         }
-        await this.request("PLAY", { Session: this._session });
+
+        //  J. UDALL - add other headers (as learned from Uniview)
+        headersParam = {...headersParam, ...{Scale: '1.000000', Range: 'npt=0.000-'}}
+        await this.request("PLAY", {...headersParam, ...{ Session: this._session }});
     }
     async pause() {
         if (!this.isConnected) {

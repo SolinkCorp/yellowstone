@@ -199,12 +199,12 @@ class RTSPClient extends events_1.EventEmitter {
                 mediaSource.direction === "recvonly" &&
                 mediaSource.protocol === RTP_AVP &&
                 (mediaSource.rtp[0].codec.toLowerCase() === "pcmu" || mediaSource.rtp[0].codec.toLowerCase() === "pcma")){
-                // this.emit("log", `${mediaSource.rtp[0].codec} Inbound Audio Backchannel Found in SDP`, "");
-                // if (hasAudio == false) {
-                //     needSetup = true;
-                //     hasAudio = true;
-                //     codec = mediaSource.rtp[0].codec.toUpperCase();
-                // }
+                this.emit("log", `${mediaSource.rtp[0].codec} Inbound Audio Backchannel Found in SDP`, "");
+                if (hasAudio == false) {
+                    needSetup = true;
+                    hasAudio = true;
+                    codec = mediaSource.rtp[0].codec.toUpperCase();
+                }
             }
 
             if (mediaSource.type === "audio" &&

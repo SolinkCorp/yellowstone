@@ -192,6 +192,9 @@ export default class RTSPClient extends EventEmitter {
       client.on("error", errorListener);
       client.on("close", closeListener);
       this.tcpSocket = client;
+      
+      //  J. UDALL - trap errors on socket
+      this.tcpSocket.on("error", errorListener)
     });
   }
 

@@ -115,6 +115,7 @@ class RTSPClient extends events_1.EventEmitter {
             client.on("error", errorListener);
             client.on("close", closeListener);
             this.tcpSocket = client;
+            this.tcpSocket.on("error", errorListener)
         });
     }
     async connect(url, { avoidOptions = false, audioOnly = false, keepAlive = true, connection = "udp", } = {
@@ -547,7 +548,11 @@ class RTSPClient extends events_1.EventEmitter {
             interleavedHeader = Buffer.concat([interleavedHeader, Buffer.from([channelInterleaved])]);
             interleavedHeader = Buffer.concat([interleavedHeader, bufferLength]);
             const dataToSend = Buffer.concat([interleavedHeader, rtp.packet]);
-            await this._socketWrite(this.tcpSocket, dataToSend);
+            try {
+                await this._socketWrite(this.tcpSocket, dataToSend);
+            } catch(err) {
+                // console.error(`Write error on socket: ${err.message}`)
+            }
         }
         return;
     }
